@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200112L
 #include <assert.h>
 #include <getopt.h>
+#include <libinput.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -8,6 +9,7 @@
 #include <unistd.h>
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
+#include <wlr/backend/libinput.h>
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_cursor.h>
@@ -99,6 +101,22 @@ struct tinywl_keyboard {
 	struct wl_listener modifiers;
 	struct wl_listener key;
 	struct wl_listener destroy;
+};
+
+struct tinywl_configuration {
+	struct xkb_rule_names xkb_rules;
+	enum libinput_config_accel_profile accel_profile;
+};
+
+/*
+ * Global variable to simplify the configuration implementation.
+ * TODO: Reimplement tinywl configuration to avoid global variables.
+ */
+const struct tinywl_configuration configuration = {
+	.xkb_rules = {
+		.layout = "latam"
+	},
+	.accel_profile = LIBINPUT_CONFIG_ACCEL_PROFILE_FLAT
 };
 
 static void focus_view(struct tinywl_view *view, struct wlr_surface *surface) {
@@ -248,8 +266,8 @@ static void server_new_keyboard(struct tinywl_server *server,
 	/* We need to prepare an XKB keymap and assign it to the keyboard. This
 	 * assumes the defaults (e.g. layout = "us"). */
 	struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-	struct xkb_keymap *keymap = xkb_keymap_new_from_names(context, NULL,
-		XKB_KEYMAP_COMPILE_NO_FLAGS);
+	struct xkb_keymap *keymap = xkb_keymap_new_from_names(context,
+		&configuration.xkb_rules, XKB_KEYMAP_COMPILE_NO_FLAGS);
 
 	wlr_keyboard_set_keymap(wlr_keyboard, keymap);
 	xkb_keymap_unref(keymap);
@@ -272,10 +290,16 @@ static void server_new_keyboard(struct tinywl_server *server,
 
 static void server_new_pointer(struct tinywl_server *server,
 		struct wlr_input_device *device) {
-	/* We don't do anything special with pointers. All of our pointer handling
-	 * is proxied through wlr_cursor. On another compositor, you might take this
-	 * opportunity to do libinput configuration on the device to set
-	 * acceleration, etc. */
+	/* Start libinput configuration. */
+	if (wlr_input_device_is_libinput(device)) {
+		struct libinput_device *libinput_device =
+			wlr_libinput_get_device_handle(device);
+
+		if (libinput_device_config_accel_is_available(libinput_device)) {
+			libinput_device_config_accel_set_profile(libinput_device,
+				configuration.accel_profile);
+		}
+	}
 	wlr_cursor_attach_input_device(server->cursor, device);
 }
 
