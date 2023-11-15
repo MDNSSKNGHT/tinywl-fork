@@ -26,6 +26,9 @@
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
+#ifdef XWAYLAND
+#include <wlr/xwayland.h>
+#endif /* XWAYLAND */
 #include <xkbcommon/xkbcommon.h>
 
 /* For brevity's sake, struct members are annotated where they are used. */
@@ -37,10 +40,17 @@ enum tinywl_cursor_mode {
 
 struct tinywl_server {
 	struct wl_display *wl_display;
+	struct wlr_compositor *compositor;
 	struct wlr_backend *backend;
 	struct wlr_renderer *renderer;
 	struct wlr_allocator *allocator;
 	struct wlr_scene *scene;
+
+#ifdef XWAYLAND
+	struct wlr_xwayland *xwayland;
+	struct wl_listener new_xwayland_surface;
+	struct wl_listener xwayland_ready;
+#endif /* XWAYLAND */
 
 	struct wlr_xdg_shell *xdg_shell;
 	struct wl_listener new_xdg_surface;
@@ -824,6 +834,17 @@ static void server_new_xdg_surface(struct wl_listener *listener, void *data) {
 		&view->request_fullscreen);
 }
 
+#ifdef XWAYLAND
+static void server_new_xwayland_surface(struct wl_listener *listener, void *data) {
+}
+
+static void server_xwayland_ready(struct wl_listener *listener, void *data) {
+	struct tinywl_server *server =
+			wl_container_of(listener, server, xwayland_ready);
+	wlr_xwayland_set_seat(server->xwayland, server->seat);
+}
+#endif /* XWAYLAND */
+
 int main(int argc, char *argv[]) {
 	wlr_log_init(WLR_DEBUG, NULL);
 	char *startup_cmd = NULL;
@@ -888,9 +909,24 @@ int main(int argc, char *argv[]) {
 	 * to dig your fingers in and play with their behavior if you want. Note that
 	 * the clients cannot set the selection directly without compositor approval,
 	 * see the handling of the request_set_selection event below.*/
-	wlr_compositor_create(server.wl_display, server.renderer);
+	server.compositor = wlr_compositor_create(server.wl_display, server.renderer);
 	wlr_subcompositor_create(server.wl_display);
 	wlr_data_device_manager_create(server.wl_display);
+
+#ifdef XWAYLAND
+	/* Setup the Xwayland server. */
+	server.xwayland = wlr_xwayland_create(server.wl_display,
+			server.compositor, false);
+	server.new_xwayland_surface.notify = server_new_xwayland_surface;
+	wl_signal_add(&server.xwayland->events.new_surface,
+			&server.new_xwayland_surface);
+	server.xwayland_ready.notify = server_xwayland_ready;
+	wl_signal_add(&server.xwayland->events.ready, &server.xwayland_ready);
+	setenv("DISPLAY", server.xwayland->display_name, true);
+#else
+	/* Discourage the use of X. */
+	unsetenv("DISPLAY");
+#endif /* XWAYLAND */
 
 	/* Creates an output layout, which a wlroots utility for working with an
 	 * arrangement of screens in a physical layout. */

@@ -1,5 +1,7 @@
 WAYLAND_PROTOCOLS=$(shell pkg-config --variable=pkgdatadir wayland-protocols)
 WAYLAND_SCANNER=$(shell pkg-config --variable=wayland_scanner wayland-scanner)
+# uncomment if you don't want to build Xwayland support.
+XWAYLAND=-DXWAYLAND
 LIBS=\
 	 $(shell pkg-config --cflags --libs libinput) \
 	 $(shell pkg-config --cflags --libs wlroots) \
@@ -18,7 +20,8 @@ tinywl: tinywl.c xdg-shell-protocol.h
 		-g -Werror -I. \
 		-DWLR_USE_UNSTABLE \
 		-o $@ $< \
-		$(LIBS)
+		$(LIBS) \
+		$(XWAYLAND)
 
 clean:
 	rm -f tinywl xdg-shell-protocol.h xdg-shell-protocol.c
