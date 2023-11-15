@@ -1,3 +1,4 @@
 -I/usr/include/pixman-1
 -I.
 -DWLR_USE_UNSTABLE
+-DXWAYLAND
