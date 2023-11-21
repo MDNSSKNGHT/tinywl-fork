@@ -8,6 +8,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <wayland-server-core.h>
+#include <wayland-util.h>
 #include <wlr/backend.h>
 #include <wlr/backend/libinput.h>
 #include <wlr/render/allocator.h>
@@ -76,6 +77,7 @@ struct tinywl_server {
 	uint32_t resize_edges;
 
 	struct wlr_output_layout *output_layout;
+	uint32_t output_width, output_height;
 	struct wl_list outputs;
 	struct wl_listener new_output;
 };
@@ -641,6 +643,8 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 		calloc(1, sizeof(struct tinywl_output));
 	output->wlr_output = wlr_output;
 	output->server = server;
+	output->server->output_width = output->wlr_output->width;
+	output->server->output_height = output->wlr_output->height;
 	/* Sets up a listener for the frame notify event. */
 	output->frame.notify = output_frame;
 	wl_signal_add(&wlr_output->events.frame, &output->frame);
@@ -663,11 +667,35 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 	wlr_output_layout_add_auto(server->output_layout, wlr_output);
 }
 
+static void tile_layout(struct tinywl_view *view) {
+	struct tinywl_server *server = view->server;
+	struct tinywl_view *pos;
+	uint32_t views = wl_list_length(&server->views);
+	int32_t x = 0, y = 0;
+
+	wl_list_for_each(pos, &server->views, link) {
+		if (view->xdg_toplevel->base->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
+			int32_t view_width = server->output_width / views;
+
+			wlr_xdg_toplevel_set_size(pos->xdg_toplevel, view_width, server->output_height);
+			wlr_scene_node_set_position(&pos->scene_tree->node, x, y);
+
+			x += view_width;
+		}
+	}
+}
+
 static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 	/* Called when the surface is mapped, or ready to display on-screen. */
 	struct tinywl_view *view = wl_container_of(listener, view, map);
 
 	wl_list_insert(&view->server->views, &view->link);
+
+	if (view->xdg_toplevel->base->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
+		wlr_xdg_toplevel_set_tiled(view->xdg_toplevel,
+				WLR_EDGE_TOP | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT);
+		tile_layout(view);
+	}
 
 	focus_view(view, view->xdg_toplevel->base->surface);
 }
@@ -691,10 +719,14 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&view->map.link);
 	wl_list_remove(&view->unmap.link);
 	wl_list_remove(&view->destroy.link);
-	wl_list_remove(&view->request_move.link);
-	wl_list_remove(&view->request_resize.link);
+	/* wl_list_remove(&view->request_move.link); */
+	/* wl_list_remove(&view->request_resize.link); */
 	wl_list_remove(&view->request_maximize.link);
 	wl_list_remove(&view->request_fullscreen.link);
+
+	if (view->xdg_toplevel->base->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
+		tile_layout(view);
+	}
 
 	free(view);
 }
@@ -822,10 +854,10 @@ static void server_new_xdg_surface(struct wl_listener *listener, void *data) {
 
 	/* cotd */
 	struct wlr_xdg_toplevel *toplevel = xdg_surface->toplevel;
-	view->request_move.notify = xdg_toplevel_request_move;
-	wl_signal_add(&toplevel->events.request_move, &view->request_move);
-	view->request_resize.notify = xdg_toplevel_request_resize;
-	wl_signal_add(&toplevel->events.request_resize, &view->request_resize);
+	/* view->request_move.notify = xdg_toplevel_request_move; */
+	/* wl_signal_add(&toplevel->events.request_move, &view->request_move); */
+	/* view->request_resize.notify = xdg_toplevel_request_resize; */
+	/* wl_signal_add(&toplevel->events.request_resize, &view->request_resize); */
 	view->request_maximize.notify = xdg_toplevel_request_maximize;
 	wl_signal_add(&toplevel->events.request_maximize,
 		&view->request_maximize);
