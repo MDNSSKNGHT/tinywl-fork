@@ -57,7 +57,9 @@ struct tinywl_server {
 
 	struct wlr_xdg_shell *xdg_shell;
 	struct wl_listener new_xdg_surface;
-	struct wl_list views;
+
+	struct wl_array workspaces;
+	struct tinywl_workspace *current_workspace;
 
 	struct wlr_xdg_decoration_manager_v1 *xdg_decoration_mgr;
 	struct wl_listener new_xdg_decoration;
@@ -110,6 +112,10 @@ struct tinywl_view {
 	int x, y;
 };
 
+struct tinywl_workspace {
+	struct wl_list views;
+};
+
 struct tinywl_keyboard {
 	struct wl_list link;
 	struct tinywl_server *server;
@@ -147,7 +153,7 @@ static void focus_view(struct tinywl_view *view, struct wlr_surface *surface) {
 	/* Move the view to the front */
 	wlr_scene_node_raise_to_top(&view->scene_tree->node);
 	wl_list_remove(&view->link);
-	wl_list_insert(&server->views, &view->link);
+	wl_list_insert(&server->current_workspace->views, &view->link);
 	/* Activate the new surface */
 	wlr_xdg_toplevel_set_activated(view->xdg_toplevel, true);
 	/*
@@ -159,6 +165,40 @@ static void focus_view(struct tinywl_view *view, struct wlr_surface *surface) {
 		wlr_seat_keyboard_notify_enter(seat, view->xdg_toplevel->base->surface,
 			keyboard->keycodes, keyboard->num_keycodes, &keyboard->modifiers);
 	}
+}
+
+static void workspace_switch_to(struct wl_array *workspaces,
+		struct tinywl_workspace **current, int tag) {
+	/*
+	 * We're working with wl_array instead of wl_list to avoid iterating
+	 * through the entire workspace collection everytime we want to switch
+	 * to another workspace.
+	 */
+	struct tinywl_workspace *current_workspace = *current;
+	struct tinywl_workspace *target_workspace =
+		((struct tinywl_workspace *)workspaces->data) + (tag - 1);
+
+	if (current_workspace == target_workspace) {
+		return;
+	}
+
+	if (!wl_list_empty(&current_workspace->views)) {
+		struct tinywl_view *view;
+
+		wl_list_for_each(view, &current_workspace->views, link) {
+			wlr_scene_node_set_enabled(&view->scene_tree->node, false);
+		}
+	}
+
+	if (!wl_list_empty(&target_workspace->views)) {
+		struct tinywl_view *view;
+
+		wl_list_for_each(view, &target_workspace->views, link) {
+			wlr_scene_node_set_enabled(&view->scene_tree->node, true);
+		}
+	}
+
+	*current = target_workspace;
 }
 
 static void keyboard_handle_modifiers(
@@ -193,12 +233,39 @@ static bool handle_keybinding(struct tinywl_server *server, xkb_keysym_t sym) {
 		break;
 	case XKB_KEY_F1:
 		/* Cycle to the next view */
-		if (wl_list_length(&server->views) < 2) {
+		if (wl_list_length(&server->current_workspace->views) < 2) {
 			break;
 		}
 		struct tinywl_view *next_view = wl_container_of(
-			server->views.prev, next_view, link);
+			server->current_workspace->views.prev, next_view, link);
 		focus_view(next_view, next_view->xdg_toplevel->base->surface);
+		break;
+	case XKB_KEY_1:
+		workspace_switch_to(&server->workspaces, &server->current_workspace, 1);
+		break;
+	case XKB_KEY_2:
+		workspace_switch_to(&server->workspaces, &server->current_workspace, 2);
+		break;
+	case XKB_KEY_3:
+		workspace_switch_to(&server->workspaces, &server->current_workspace, 3);
+		break;
+	case XKB_KEY_4:
+		workspace_switch_to(&server->workspaces, &server->current_workspace, 4);
+		break;
+	case XKB_KEY_5:
+		workspace_switch_to(&server->workspaces, &server->current_workspace, 5);
+		break;
+	case XKB_KEY_6:
+		workspace_switch_to(&server->workspaces, &server->current_workspace, 6);
+		break;
+	case XKB_KEY_7:
+		workspace_switch_to(&server->workspaces, &server->current_workspace, 7);
+		break;
+	case XKB_KEY_8:
+		workspace_switch_to(&server->workspaces, &server->current_workspace, 8);
+		break;
+	case XKB_KEY_9:
+		workspace_switch_to(&server->workspaces, &server->current_workspace, 9);
 		break;
 	default:
 		return false;
@@ -391,6 +458,24 @@ static struct tinywl_view *desktop_view_at(
 		tree = tree->node.parent;
 	}
 	return tree->node.data;
+}
+
+static void initialize_workspaces(struct tinywl_server *server) {
+	/* This configures the list of workspaces in the server structure,
+	 * then we set our default workspace. */
+	wl_array_init(&server->workspaces);
+
+	wl_array_add(&server->workspaces,
+			sizeof(struct tinywl_workspace) * 9);
+
+	struct tinywl_workspace *workspace;
+	wl_array_for_each(workspace, &server->workspaces) {
+		wl_list_init(&workspace->views);
+	}
+
+	/* Set the fist element in the workspaces array as
+	 * out default workspace. */
+	server->current_workspace = server->workspaces.data;
 }
 
 static void reset_cursor_mode(struct tinywl_server *server) {
@@ -664,10 +749,10 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 static void tile_layout(struct tinywl_view *view) {
 	struct tinywl_server *server = view->server;
 	struct tinywl_view *pos;
-	uint32_t views = wl_list_length(&server->views);
+	uint32_t views = wl_list_length(&server->current_workspace->views);
 	int32_t x = 0, y = 0;
 
-	wl_list_for_each(pos, &server->views, link) {
+	wl_list_for_each(pos, &server->current_workspace->views, link) {
 		if (view->xdg_toplevel->base->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
 			int32_t view_width = server->output_width / views;
 
@@ -683,7 +768,7 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 	/* Called when the surface is mapped, or ready to display on-screen. */
 	struct tinywl_view *view = wl_container_of(listener, view, map);
 
-	wl_list_insert(&view->server->views, &view->link);
+	wl_list_insert(&view->server->current_workspace->views, &view->link);
 
 	if (view->xdg_toplevel->base->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
 		wlr_xdg_toplevel_set_tiled(view->xdg_toplevel,
@@ -985,7 +1070,7 @@ int main(int argc, char *argv[]) {
 	 *
 	 * https://drewdevault.com/2018/07/29/Wayland-shells.html
 	 */
-	wl_list_init(&server.views);
+	initialize_workspaces(&server);
 	server.xdg_shell = wlr_xdg_shell_create(server.wl_display, 3);
 	server.new_xdg_surface.notify = server_new_xdg_surface;
 	wl_signal_add(&server.xdg_shell->events.new_surface,
