@@ -114,6 +114,8 @@ struct tinywl_view {
 
 struct tinywl_workspace {
 	struct wl_list views;
+	struct tinywl_server *server;
+	struct tinywl_view *focused_view;
 };
 
 struct tinywl_keyboard {
@@ -126,13 +128,18 @@ struct tinywl_keyboard {
 	struct wl_listener destroy;
 };
 
-static void focus_view(struct tinywl_view *view, struct wlr_surface *surface) {
+static void focus_view(struct tinywl_view *view,
+		struct wlr_surface *surface, bool focus) {
 	/* Note: this function only deals with keyboard focus. */
 	if (view == NULL) {
 		return;
 	}
 	struct tinywl_server *server = view->server;
 	struct wlr_seat *seat = server->seat;
+	if (!focus) {
+		wlr_seat_keyboard_notify_clear_focus(seat);
+	}
+	struct tinywl_workspace *current_workspace = server->current_workspace;
 	struct wlr_surface *prev_surface = seat->keyboard_state.focused_surface;
 	if (prev_surface == surface) {
 		/* Don't re-focus an already focused surface. */
@@ -153,7 +160,10 @@ static void focus_view(struct tinywl_view *view, struct wlr_surface *surface) {
 	/* Move the view to the front */
 	wlr_scene_node_raise_to_top(&view->scene_tree->node);
 	wl_list_remove(&view->link);
-	wl_list_insert(&server->current_workspace->views, &view->link);
+	wl_list_insert(&current_workspace->views, &view->link);
+	if (current_workspace->focused_view != view) {
+		current_workspace->focused_view = view;
+	}
 	/* Activate the new surface */
 	wlr_xdg_toplevel_set_activated(view->xdg_toplevel, true);
 	/*
@@ -188,7 +198,11 @@ static void workspace_switch_to(struct wl_array *workspaces,
 		wl_list_for_each(view, &current_workspace->views, link) {
 			wlr_scene_node_set_enabled(&view->scene_tree->node, false);
 		}
+
+		focus_view(current_workspace->focused_view, NULL, false);
 	}
+
+	*current = target_workspace;
 
 	if (!wl_list_empty(&target_workspace->views)) {
 		struct tinywl_view *view;
@@ -196,9 +210,11 @@ static void workspace_switch_to(struct wl_array *workspaces,
 		wl_list_for_each(view, &target_workspace->views, link) {
 			wlr_scene_node_set_enabled(&view->scene_tree->node, true);
 		}
-	}
 
-	*current = target_workspace;
+		focus_view(target_workspace->focused_view,
+			target_workspace->focused_view->xdg_toplevel->base->surface,
+			true);
+	}
 }
 
 static void keyboard_handle_modifiers(
@@ -238,7 +254,7 @@ static bool handle_keybinding(struct tinywl_server *server, xkb_keysym_t sym) {
 		}
 		struct tinywl_view *next_view = wl_container_of(
 			server->current_workspace->views.prev, next_view, link);
-		focus_view(next_view, next_view->xdg_toplevel->base->surface);
+		focus_view(next_view, next_view->xdg_toplevel->base->surface, true);
 		break;
 	case XKB_KEY_1:
 		workspace_switch_to(&server->workspaces, &server->current_workspace, 1);
@@ -639,7 +655,7 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 		reset_cursor_mode(server);
 	} else {
 		/* Focus that client if the button was _pressed_ */
-		focus_view(view, surface);
+		focus_view(view, surface, true);
 	}
 }
 
@@ -776,7 +792,7 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 		tile_layout(view);
 	}
 
-	focus_view(view, view->xdg_toplevel->base->surface);
+	focus_view(view, view->xdg_toplevel->base->surface, true);
 }
 
 static void xdg_toplevel_unmap(struct wl_listener *listener, void *data) {
