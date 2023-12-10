@@ -84,7 +84,6 @@ struct tinywl_server {
 	uint32_t resize_edges;
 
 	struct wlr_output_layout *output_layout;
-	uint32_t output_width, output_height;
 	struct wl_list outputs;
 	struct wl_listener new_output;
 };
@@ -100,6 +99,7 @@ struct tinywl_output {
 struct tinywl_view {
 	struct wl_list link;
 	struct tinywl_server *server;
+	struct tinywl_workspace *workspace;
 	struct wlr_xdg_toplevel *xdg_toplevel;
 	struct wlr_scene_tree *scene_tree;
 	struct wl_listener map;
@@ -487,6 +487,7 @@ static void initialize_workspaces(struct tinywl_server *server) {
 	struct tinywl_workspace *workspace;
 	wl_array_for_each(workspace, &server->workspaces) {
 		wl_list_init(&workspace->views);
+		workspace->server = server;
 	}
 
 	/* Set the fist element in the workspaces array as
@@ -738,8 +739,6 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 		calloc(1, sizeof(struct tinywl_output));
 	output->wlr_output = wlr_output;
 	output->server = server;
-	output->server->output_width = output->wlr_output->width;
-	output->server->output_height = output->wlr_output->height;
 	/* Sets up a listener for the frame notify event. */
 	output->frame.notify = output_frame;
 	wl_signal_add(&wlr_output->events.frame, &output->frame);
@@ -762,21 +761,35 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 	wlr_output_layout_add_auto(server->output_layout, wlr_output);
 }
 
-static void tile_layout(struct tinywl_view *view) {
-	struct tinywl_server *server = view->server;
-	struct tinywl_view *pos;
-	uint32_t views = wl_list_length(&server->current_workspace->views);
-	int32_t x = 0, y = 0;
+static void tile_layout(struct tinywl_workspace *workspace, bool tile) {
+	if (!tile) {
+		return;
+	}
+	struct tinywl_server *server = workspace->server;
+	struct wlr_output *wlr_output =
+		wlr_output_layout_get_center_output(server->output_layout);
+	int view_count = wl_list_length(&workspace->views);
+	/* The number of pixels (in the X axis) to skip
+	 * before placing our view. */
+	int spacing = 0;
 
-	wl_list_for_each(pos, &server->current_workspace->views, link) {
-		if (view->xdg_toplevel->base->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
-			int32_t view_width = server->output_width / views;
-
-			wlr_xdg_toplevel_set_size(pos->xdg_toplevel, view_width, server->output_height);
-			wlr_scene_node_set_position(&pos->scene_tree->node, x, y);
-
-			x += view_width;
+	struct tinywl_view *view;
+	wl_list_for_each(view, &workspace->views, link) {
+		/* No need to tile if a popup appeared, just let it be. */
+		if (view->xdg_toplevel->base->role == WLR_XDG_SURFACE_ROLE_POPUP) {
+			continue;
 		}
+		int32_t width = wlr_output->width / view_count;
+		int32_t height = wlr_output->height;
+
+		wlr_xdg_toplevel_set_size(view->xdg_toplevel, width, height);
+
+		view->x = spacing;
+		view->y = 0;
+
+		wlr_scene_node_set_position(&view->scene_tree->node, view->x, view->y);
+
+		spacing += width;
 	}
 }
 
@@ -786,11 +799,8 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 
 	wl_list_insert(&view->server->current_workspace->views, &view->link);
 
-	if (view->xdg_toplevel->base->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
-		wlr_xdg_toplevel_set_tiled(view->xdg_toplevel,
-				WLR_EDGE_TOP | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT);
-		tile_layout(view);
-	}
+	tile_layout(view->workspace,
+		view->xdg_toplevel->base->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL);
 
 	focus_view(view, view->xdg_toplevel->base->surface, true);
 }
@@ -819,9 +829,8 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&view->request_maximize.link);
 	wl_list_remove(&view->request_fullscreen.link);
 
-	if (view->xdg_toplevel->base->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
-		tile_layout(view);
-	}
+	tile_layout(view->workspace,
+		view->xdg_toplevel->base->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL);
 
 	free(view);
 }
@@ -934,10 +943,16 @@ static void server_new_xdg_surface(struct wl_listener *listener, void *data) {
 		calloc(1, sizeof(struct tinywl_view));
 	view->server = server;
 	view->xdg_toplevel = xdg_surface->toplevel;
+	view->workspace = server->current_workspace;
 	view->scene_tree = wlr_scene_xdg_surface_create(
 			&view->server->scene->tree, view->xdg_toplevel->base);
 	view->scene_tree->node.data = view;
 	xdg_surface->data = view->scene_tree;
+
+	/* Request toplevel to consider itself to be in a tiling
+	 * layout. */
+	wlr_xdg_toplevel_set_tiled(view->xdg_toplevel,
+		WLR_EDGE_TOP | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT);
 
 	/* Listen to the various events it can emit */
 	view->map.notify = xdg_toplevel_map;
@@ -1064,7 +1079,6 @@ int main(int argc, char *argv[]) {
 	/* Creates an output layout, which a wlroots utility for working with an
 	 * arrangement of screens in a physical layout. */
 	server.output_layout = wlr_output_layout_create();
-
 	/* Configure a listener to be notified when new outputs are available on the
 	 * backend. */
 	wl_list_init(&server.outputs);
